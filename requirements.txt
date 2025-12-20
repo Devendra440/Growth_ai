@@ -1,0 +1,7 @@
+streamlit
+google-generativeai
+pymongo
+bcrypt
+python-dotenv
+numpy
+matplotlib
