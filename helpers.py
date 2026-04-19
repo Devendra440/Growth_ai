@@ -214,12 +214,17 @@ def generate_pdf(strategy_doc, ai_text):
         ("Goal", strategy_doc.get("goal", "N/A")),
     ]
     for label, value in info_fields:
+        # Clean value of non-latin1 characters
+        safe_value = str(value).encode('latin-1', 'ignore').decode('latin-1')
+        
         pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(45, 7, f"{label}:", ln=False)
+        pdf.cell(45, 7, f"{label}:", ln=0)
         pdf.set_font("Helvetica", "", 11)
-        pdf.multi_cell(0, 7, str(value))
+        # Use a fixed width (145mm) to avoid horizontal space errors
+        pdf.multi_cell(145, 7, safe_value)
+        pdf.ln(1) # Add a small gap between rows
     
-    pdf.ln(8)
+    pdf.ln(5)
     
     # AI Strategy
     pdf.set_font("Helvetica", "B", 14)
@@ -229,8 +234,11 @@ def generate_pdf(strategy_doc, ai_text):
     pdf.ln(5)
     
     pdf.set_font("Helvetica", "", 10)
-    # Clean markdown from text
+    # Clean markdown and non-latin1 characters from text
     clean_text = ai_text.replace("###", "").replace("**", "").replace("*", "").replace("#", "")
+    # Ensure text is compatible with standard PDF fonts (Latin-1)
+    clean_text = clean_text.encode('latin-1', 'ignore').decode('latin-1')
+    
     for line in clean_text.split("\n"):
         line = line.strip()
         if line:
@@ -242,7 +250,7 @@ def generate_pdf(strategy_doc, ai_text):
     pdf.set_font("Helvetica", "I", 8)
     pdf.cell(0, 10, "Powered by Growth_AI Intelligence Platform", ln=True, align="C")
     
-    return pdf.output()
+    return bytes(pdf.output())
 
 # =====================================================
 # TEXT ANALYTICS

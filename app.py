@@ -238,11 +238,37 @@ genai.configure(api_key=api_key.strip())
 
 @st.cache_resource
 def get_working_model():
+    # Try multiple common model names based on current availability
+    models_to_try = [
+        "gemini-2.5-flash", 
+        "gemini-2.0-flash", 
+        "gemini-flash-latest",
+        "gemini-pro-latest",
+        "gemini-1.5-flash", 
+        "gemini-pro"
+    ]
+    
+    # Try specific models first
+    for model_name in models_to_try:
+        try:
+            m = genai.GenerativeModel(model_name)
+            # Verify the model actually exists and supports generation
+            m.generate_content("ping", generation_config={"max_output_tokens": 1})
+            return m
+        except Exception:
+            continue
+    
+    # Final fallback: list all and pick the first working one
     try:
         for m in genai.list_models():
             if "generateContent" in m.supported_generation_methods:
-                return genai.GenerativeModel(m.name)
-    except Exception as e:
+                try:
+                    gm = genai.GenerativeModel(m.name)
+                    gm.generate_content("ping", generation_config={"max_output_tokens": 1})
+                    return gm
+                except Exception:
+                    continue
+    except Exception:
         return None
     return None
 
@@ -352,14 +378,21 @@ if not st.session_state.authenticated:
                  st.sidebar.error("❌ Username and Password required")
             else:
                 user = users_collection.find_one({"username": username.strip()})
-                if user and bcrypt.checkpw(password.strip().encode('utf-8'), user["password"]):
-                    st.session_state.authenticated = True
-                    st.session_state.current_user = user
-                    st.session_state.last_activity = datetime.datetime.now()
-                    st.session_state.page = "Home"
-                    st.rerun()
+                if user:
+                    stored_password = user["password"]
+                    if isinstance(stored_password, str):
+                        stored_password = stored_password.encode('utf-8')
+                    
+                    if bcrypt.checkpw(password.strip().encode('utf-8'), stored_password):
+                        st.session_state.authenticated = True
+                        st.session_state.current_user = user
+                        st.session_state.last_activity = datetime.datetime.now()
+                        st.session_state.page = "Home"
+                        st.rerun()
+                    else:
+                        st.sidebar.error("❌ Invalid credentials")
                 else:
-                    st.sidebar.error("❌ Invalid credentials")
+                    st.sidebar.error("❌ User not found")
 
     st.stop()
 
@@ -429,17 +462,20 @@ if st.session_state.page == "Profile & Analytics":
         st.markdown("</div>", unsafe_allow_html=True)
         
         if strategies:
-            # Industry breakdown chart
-            df = pd.DataFrame(strategies)
-            if 'industry' in df.columns:
-                ind_counts = df['industry'].value_counts().reset_index()
-                ind_counts.columns = ['Industry', 'Count']
-                fig = px.pie(ind_counts, values='Count', names='Industry', 
-                             title="Strategies by Industry", hole=0.4,
-                             color_discrete_sequence=px.colors.sequential.Purp)
-                fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', 
-                                  font_color="white")
-                st.plotly_chart(fig, use_container_width=True)
+            try:
+                # Industry breakdown chart
+                df = pd.DataFrame(strategies)
+                if not df.empty and 'industry' in df.columns:
+                    ind_counts = df['industry'].value_counts().reset_index()
+                    ind_counts.columns = ['Industry', 'Count']
+                    fig = px.pie(ind_counts, values='Count', names='Industry', 
+                                 title="Strategies by Industry", hole=0.4,
+                                 color_discrete_sequence=px.colors.sequential.Purp)
+                    fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', 
+                                      font_color="white", margin=dict(t=40, b=0, l=0, r=0))
+                    st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Could not render analytics: {e}")
 
 # =====================================================
 # HISTORY PAGE
@@ -486,8 +522,8 @@ elif st.session_state.page == "History":
             title = f"{star_icon} {business} - {product} ({time_str})"
             
             with st.expander(title):
-                st.markdown(f"**Industry:** {strat.get('industry')} | **Target Market:** {strat.get('target_market')}")
-                st.markdown(f"**Challenge:** {strat.get('challenge')}")
+                st.markdown(f"**Industry:** {strat.get('industry', 'N/A')} | **Target Market:** {strat.get('target_market', 'N/A')}")
+                st.markdown(f"**Challenge:** {strat.get('challenge', 'N/A')}")
                 
                 # Action Buttons
                 btn_c1, btn_c2, btn_c3, btn_c4 = st.columns(4)
@@ -496,9 +532,19 @@ elif st.session_state.page == "History":
                     st.rerun()
                 
                 if btn_c2.button("🗑️ Delete", key=f"del_{doc_id}"):
-                    strategies_collection.delete_one({"_id": doc_id})
-                    st.toast("Strategy deleted successfully!")
-                    st.rerun()
+                    st.session_state[f"confirm_del_{doc_id}"] = True
+                
+                if st.session_state.get(f"confirm_del_{doc_id}"):
+                    st.warning("Are you sure?")
+                    c1, c2 = st.columns(2)
+                    if c1.button("Confirm", key=f"y_del_{doc_id}"):
+                        strategies_collection.delete_one({"_id": doc_id})
+                        st.session_state.pop(f"confirm_del_{doc_id}")
+                        st.toast("Strategy deleted successfully!")
+                        st.rerun()
+                    if c2.button("Cancel", key=f"n_del_{doc_id}"):
+                        st.session_state.pop(f"confirm_del_{doc_id}")
+                        st.rerun()
                 
                 # PDF Download
                 pdf_bytes = generate_pdf(strat, strat.get("ai_response", ""))
@@ -549,6 +595,11 @@ elif st.session_state.page == "AI Strategy Engine":
             business_type = st.text_input("Business Type *")
             product = st.text_input("Product / Service Name *")
             industry = st.selectbox("Industry *", list(INDUSTRY_PROMPTS.keys()))
+            if industry == "Other":
+                custom_industry = st.text_input("Specify Industry *", key="custom_industry")
+                industry_to_use = custom_industry if custom_industry else "Other"
+            else:
+                industry_to_use = industry
         with col2:
             scale = st.selectbox("Business Scale *", ["Startup", "Small", "Medium", "Enterprise"])
             target_market = st.selectbox("Target Market *", ["B2B", "B2C", "B2B2C"])
@@ -579,7 +630,7 @@ elif st.session_state.page == "AI Strategy Engine":
         USER_INPUT = f"""
         Business Type: {business_type}
         Product: {product}
-        Industry: {industry} ({industry_context})
+        Industry: {industry_to_use} ({industry_context})
         Business Scale: {scale}
         Target Market: {target_market}
         Location: {location}
@@ -600,6 +651,10 @@ elif st.session_state.page == "AI Strategy Engine":
 
         try:
             response = model.generate_content(MASTER_PROMPT + "\n\n" + USER_INPUT)
+            if not response or not hasattr(response, 'text'):
+                st.error("❌ AI returned an empty response. This might be due to safety filters or API limits.")
+                st.stop()
+                
             result_text = response.text
             increment_rate_limit()
             
@@ -619,7 +674,7 @@ elif st.session_state.page == "AI Strategy Engine":
                 "username": st.session_state.current_user.get("username"),
                 "business_type": business_type,
                 "product": product,
-                "industry": industry,
+                "industry": industry_to_use,
                 "scale": scale,
                 "target_market": target_market,
                 "location": location,
@@ -668,24 +723,51 @@ elif st.session_state.page == "AI Strategy Engine":
             st.session_state.chat_history.append({"role": "assistant", "content": "I've generated your report. What specific area would you like to dive deeper into?"})
 
         except Exception as e:
-            st.error(f"❌ An error occurred during AI generation: {e}")
+            error_msg = str(e)
+            if "429" in error_msg:
+                st.error("⚠️ **Rate Limit Reached (Free Tier)**: You've made too many requests in a short time. Please wait a minute and try again.")
+                st.info("Tip: The Google AI Free Tier has limits on how many strategies you can generate per minute.")
+            elif "safety" in error_msg.lower():
+                st.error("🚫 **Safety Filter Triggered**: The AI could not generate a response for this specific query due to content safety guidelines.")
+            else:
+                st.error(f"❌ An error occurred during AI generation: {error_msg}")
 
     # Chat interface at the bottom
     if len(st.session_state.chat_history) > 0:
         st.divider()
-        st.subheader("💬 Discuss this Strategy")
+        col_chat, col_clear = st.columns([5, 1])
+        with col_chat:
+            st.subheader("💬 Discuss this Strategy")
+        with col_clear:
+            if st.button("🗑️ Clear Chat", key="clear_chat"):
+                st.session_state.chat_history = []
+                st.rerun()
+
         for msg in st.session_state.chat_history:
             if msg["role"] == "user":
-                st.markdown(f"**You:** {msg['content']}")
+                st.info(f"**You:** {msg['content']}")
             else:
-                st.markdown(f"**Growth_AI:** {msg['content']}")
+                st.success(f"**Growth_AI:** {msg['content']}")
                 
-        chat_input = st.text_input("Ask a follow-up question...")
-        if st.button("Send") and chat_input:
+        chat_input = st.text_input("Ask a follow-up question about this strategy...")
+        if st.button("Send Query", key="send_chat") and chat_input:
             st.session_state.chat_history.append({"role": "user", "content": chat_input})
+            
+            # Use the last generated response as context if available
+            context = ""
+            if 'result_text' in locals():
+                context = f"Context: {result_text}\n\n"
+            
             with st.spinner("Thinking..."):
-                resp = model.generate_content(f"Based on our strategy discussion, answer this: {chat_input}")
-                st.session_state.chat_history.append({"role": "assistant", "content": resp.text})
+                try:
+                    full_prompt = f"{context}The user is asking a follow-up question: {chat_input}\nProvide a concise and strategic answer."
+                    resp = model.generate_content(full_prompt)
+                    if resp and hasattr(resp, 'text'):
+                        st.session_state.chat_history.append({"role": "assistant", "content": resp.text})
+                    else:
+                        st.session_state.chat_history.append({"role": "assistant", "content": "I apologize, but I couldn't process that question. Could you rephrase?"})
+                except Exception as e:
+                    st.session_state.chat_history.append({"role": "assistant", "content": f"Error: {str(e)}"})
             st.rerun()
 
 # =====================================================

@@ -11,7 +11,7 @@ You can now view your Streamlit app in your browser.
   Local URL: http://localhost:8501
   Network URL: http://192.168.1.11:8501
 
-repository link: 
+repository link: https://github.com/Devendra440/Growth_ai
 
-delpoyment link:
+delpoyment link:https://growthai-5po9ndvrcvdqpbusp6t59v.streamlit.app/
 
