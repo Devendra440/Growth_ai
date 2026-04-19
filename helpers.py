@@ -12,38 +12,59 @@ import string
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+from email.mime.application import MIMEApplication
+
 # =====================================================
-# EMAIL VERIFICATION
+# EMAIL UTILITIES (PREMIUM DESIGN)
 # =====================================================
+
+EMAIL_CSS = """
+    .container { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; }
+    .header { background: linear-gradient(135deg, #7C3AED, #06B6D4); padding: 40px 20px; text-align: center; color: white; }
+    .content { padding: 30px; line-height: 1.6; color: #334155; }
+    .otp-box { background: #f8fafc; padding: 20px; font-size: 32px; letter-spacing: 5px; font-weight: 800; text-align: center; color: #7C3AED; border-radius: 8px; margin: 25px 0; border: 2px dashed #cbd5e1; }
+    .button { display: inline-block; padding: 12px 25px; background: #7C3AED; color: white !important; text-decoration: none; border-radius: 50px; font-weight: 600; margin-top: 20px; }
+    .footer { background: #f1f5f9; padding: 20px; text-align: center; font-size: 12px; color: #64748b; border-top: 1px solid #e2e8f0; }
+    .logo { font-size: 28px; font-weight: 800; margin-bottom: 5px; }
+    .tagline { font-size: 14px; opacity: 0.9; }
+"""
+
 def generate_otp():
-    """Generate a 6-digit numeric OTP."""
     return ''.join(random.choices(string.digits, k=6))
 
 def send_verification_email(receiver_email, otp):
-    """Send verification email using Gmail SMTP."""
     sender_email = os.getenv("EMAIL_USER")
     sender_password = os.getenv("EMAIL_PASS")
     
     if not sender_email or not sender_password:
-        return False, "Email credentials not found in environment."
+        return False, "Email credentials not found."
 
     message = MIMEMultipart("alternative")
-    message["Subject"] = "Verify your Growth_AI Account"
-    message["From"] = f"Growth_AI <{sender_email}>"
+    message["Subject"] = "🔐 Verify your Growth_AI account"
+    message["From"] = f"Growth_AI Team <{sender_email}>"
     message["To"] = receiver_email
 
     html = f"""
     <html>
-      <body style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-        <h2 style="color: #7C3AED;">Welcome to Growth_AI!</h2>
-        <p>Thank you for signing up. Please use the following code to verify your account:</p>
-        <div style="background: #f4f4f4; padding: 15px; font-size: 24px; font-weight: bold; text-align: center; border-radius: 10px; border: 1px solid #ddd;">
-          {otp}
+      <head><style>{EMAIL_CSS}</style></head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <div class="logo">Growth_AI</div>
+            <div class="tagline">Predict • Personalize • Convert</div>
+          </div>
+          <div class="content">
+            <h2>Verify your identity</h2>
+            <p>Hello,</p>
+            <p>Welcome to the future of B2B sales intelligence! To complete your registration and unlock premium AI strategies, please use the verification code below:</p>
+            <div class="otp-box">{otp}</div>
+            <p>This code is valid for 10 minutes. If you did not create an account, you can safely ignore this email.</p>
+          </div>
+          <div class="footer">
+            <p>© 2026 Growth_AI Intelligence Platform</p>
+            <p>Empowering 10,000+ businesses with data-driven outreach.</p>
+          </div>
         </div>
-        <p>This code will expire in 10 minutes.</p>
-        <p>If you didn't request this, you can safely ignore this email.</p>
-        <hr style="border: none; border-top: 1px solid #eee; margin-top: 20px;">
-        <small style="color: #999;">© 2026 Growth_AI Intelligence Platform</small>
       </body>
     </html>
     """
@@ -53,7 +74,69 @@ def send_verification_email(receiver_email, otp):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, receiver_email, message.as_string())
-        return True, "Email sent successfully."
+        return True, "Email sent."
+    except Exception as e:
+        return False, str(e)
+
+def send_strategy_email(receiver_email, strategy_doc, pdf_content):
+    sender_email = os.getenv("EMAIL_USER")
+    sender_password = os.getenv("EMAIL_PASS")
+    
+    if not sender_email or not sender_password:
+        return False, "Email credentials missing."
+
+    business_name = strategy_doc.get('business_type', 'Business')
+    
+    message = MIMEMultipart()
+    message["Subject"] = f"🚀 Your Strategic Intelligence Report: {business_name}"
+    message["From"] = f"Growth_AI Intelligence <{sender_email}>"
+    message["To"] = receiver_email
+
+    html = f"""
+    <html>
+      <head><style>{EMAIL_CSS}</style></head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <div class="logo">Growth_AI</div>
+            <div class="tagline">Your Strategic Growth Partner</div>
+          </div>
+          <div class="content">
+            <h2>Your Report is Ready!</h2>
+            <p>Hello,</p>
+            <p>Our AI engines have finished analyzing your business context for <strong>{business_name}</strong>. We've identified key growth levers and location-based opportunities to accelerate your market capture.</p>
+            <p>We've attached the full <strong>Strategic Intelligence Report (PDF)</strong> to this email for your records.</p>
+            <div style="text-align: center;">
+              <a href="https://growthai-5po9ndvrcvdqpbusp6t59v.streamlit.app/" class="button">Access Online Dashboard</a>
+            </div>
+            <p style="margin-top: 30px;">Next steps:</p>
+            <ul>
+              <li>Review the Competitor Analysis section.</li>
+              <li>Evaluate the suggested Industrial Locations.</li>
+              <li>Implement the AI-driven Pricing adjustments.</li>
+            </ul>
+          </div>
+          <div class="footer">
+            <p><strong>Growth_AI | B2B Sales Intelligence</strong></p>
+            <p>Sent with ❤️ from our AI Strategy Center</p>
+            <p>© 2026 Growth_AI. All rights reserved.</p>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+    message.attach(MIMEText(html, "html"))
+
+    # Attachment
+    part = MIMEApplication(pdf_content, Name=f"{business_name}_Strategy.pdf")
+    part['Content-Disposition'] = f'attachment; filename="{business_name}_Strategy.pdf"'
+    message.attach(part)
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, receiver_email, message.as_string())
+        return True, "Strategy emailed."
     except Exception as e:
         return False, str(e)
 

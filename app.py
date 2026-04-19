@@ -22,7 +22,8 @@ from helpers import (
     check_session_timeout, generate_pdf, 
     get_word_count, INDUSTRY_PROMPTS, 
     ensure_indexes, time_ago,
-    generate_otp, send_verification_email
+    generate_otp, send_verification_email,
+    send_strategy_email
 )
 
 # =====================================================
@@ -625,6 +626,17 @@ elif st.session_state.page == "AI Strategy Engine":
 
             # PDF Download
             pdf_bytes = generate_pdf(strategy_doc, result_text)
+            
+            # Send Email with PDF
+            user_email = user_data.get('email')
+            if user_email:
+                with st.spinner("📧 Emailing report to you..."):
+                    e_success, e_msg = send_strategy_email(user_email, strategy_doc, pdf_bytes)
+                    if e_success:
+                        st.toast("📧 Report also sent to your email!", icon="📩")
+                    else:
+                        st.sidebar.warning(f"⚠️ Email failed: {e_msg}")
+
             st.download_button(
                 label="📄 Download PDF Report",
                 data=pdf_bytes,
