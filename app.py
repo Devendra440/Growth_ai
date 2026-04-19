@@ -5,13 +5,24 @@ import streamlit as st
 import google.generativeai as genai
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 import os
 import pymongo
 import bcrypt
 import datetime
 import pandas as pd
 import re
+import time
 from dotenv import load_dotenv
+from bson.objectid import ObjectId
+
+from helpers import (
+    check_rate_limit, increment_rate_limit, 
+    check_session_timeout, generate_pdf, 
+    get_word_count, INDUSTRY_PROMPTS, 
+    ensure_indexes, time_ago
+)
 
 # =====================================================
 # LOAD ENV
@@ -49,30 +60,17 @@ st.markdown("""
         font-family: 'Outfit', sans-serif !important;
     }
 
-    /* Main Background with subtle mesh animation */
+    /* Main Background */
     .stApp {
         background: radial-gradient(circle at top right, #1E1B4B, #0F172A, #020617);
-        background-size: 200% 200%;
-        animation: meshGradient 15s ease infinite;
+        background-attachment: fixed;
         color: var(--text-main);
-    }
-
-    @keyframes meshGradient {
-        0% { background-position: 0% 50%; }
-        50% { background-position: 100% 50%; }
-        100% { background-position: 0% 50%; }
     }
 
     /* Animations */
     @keyframes fadeIn {
         from { opacity: 0; transform: translateY(20px); }
         to { opacity: 1; transform: translateY(0); }
-    }
-
-    @keyframes gradientBG {
-        0% { background-position: 0% 50%; }
-        50% { background-position: 100% 50%; }
-        100% { background-position: 0% 50%; }
     }
 
     .animate-fade-in {
@@ -132,7 +130,6 @@ st.markdown("""
         border-radius: 50px !important;
         font-weight: 600 !important;
         transition: all 0.3s ease !important;
-        width: 100%;
         text-transform: uppercase;
         letter-spacing: 1px;
     }
@@ -149,13 +146,6 @@ st.markdown("""
         color: var(--secondary) !important;
     }
 
-    /* Header Styling */
-    .project-header {
-        padding: 2rem 0;
-        border-bottom: 2px solid rgba(255, 255, 255, 0.05);
-        margin-bottom: 2rem;
-    }
-
     .badge {
         background: rgba(124, 58, 237, 0.15);
         color: var(--primary);
@@ -168,14 +158,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Load FontAwesome for Icons
 st.markdown('<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">', unsafe_allow_html=True)
 
 # =====================================================
 # MONGODB CONNECTION
 # =====================================================
-
-# Load connection string
 MONGO_URI = os.getenv("MONGO_URI")
 
 @st.cache_resource
@@ -184,7 +171,6 @@ def init_connection():
         return None, "MONGO_URI not found in environment variables"
     try:
         client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        # Check if connection is successful
         client.admin.command('ping')
         return client, None
     except Exception as e:
@@ -196,10 +182,11 @@ if not client:
     st.error(f"❌ Failed to connect to MongoDB. Error: {err_msg}")
     st.stop()
 
-# database and collection
 db = client["growth_ai_db"]
 users_collection = db["users"]
 strategies_collection = db["strategies"]
+
+ensure_indexes(users_collection, strategies_collection)
 
 # =====================================================
 # SESSION STATE INIT
@@ -210,6 +197,8 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "current_user" not in st.session_state:
     st.session_state.current_user = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
 # =====================================================
 # API KEY CHECK
@@ -219,34 +208,22 @@ if not api_key:
     st.error("❌ GOOGLE_API_KEY not found in .env file")
     st.stop()
 
-# Clean key
-api_key = api_key.strip()
+genai.configure(api_key=api_key.strip())
 
-# =====================================================
-# GEMINI CONFIG (AUTO MODEL)
-# =====================================================
-genai.configure(api_key=api_key)
-
+@st.cache_resource
 def get_working_model():
     try:
         for m in genai.list_models():
             if "generateContent" in m.supported_generation_methods:
                 return genai.GenerativeModel(m.name)
     except Exception as e:
-        st.error(f"⚠️ Gemini Connection Failed: {e}")
         return None
     return None
 
 model = get_working_model()
-if not model:
-    st.warning("⚠️ AI features are unavailable due to connection issues.")
-    # Do not stop, allow app to run without AI
-else:
-    # Only verify if model is available
-    pass
 
 # =====================================================
-# HEADER (PROJECT NAME RIGHT SIDE)
+# HEADER
 # =====================================================
 header_left, header_right = st.columns([3, 1])
 with header_left:
@@ -255,7 +232,7 @@ with header_left:
 with header_right:
     st.markdown(
         "<div style='text-align:right; padding-top:20px;'>"
-        "<span class='badge'>Hackathon Edition</span><br>"
+        "<span class='badge'>Premium Edition</span><br>"
         "<small style='color:var(--text-dim)'>Predict • Personalize • Convert</small>"
         "</div>",
         unsafe_allow_html=True
@@ -264,19 +241,25 @@ with header_right:
 st.markdown("<div style='height:2px; background:linear-gradient(90deg, var(--primary), transparent); margin-bottom:2rem;'></div>", unsafe_allow_html=True)
 
 # =====================================================
+# SESSION TIMEOUT CHECK
+# =====================================================
+if st.session_state.authenticated:
+    if check_session_timeout():
+        st.session_state.authenticated = False
+        st.session_state.current_user = None
+        st.warning("Session expired due to inactivity. Please log in again.")
+        st.rerun()
+
+# =====================================================
 # SIDEBAR – AUTH & NAVIGATION
 # =====================================================
 st.sidebar.title("🔐 Account")
 
-# ---------------- LOGIN / SIGNUP ----------------
-# ---------------- LOGIN / SIGNUP ----------------
 if not st.session_state.authenticated:
-
     auth_tab = st.sidebar.radio("Select", ["Login", "Sign Up"], key="auth_radio")
 
     if auth_tab == "Sign Up":
         st.sidebar.subheader("Create Account")
-
         full_name = st.sidebar.text_input("Full Name", key="su_fullname")
         email = st.sidebar.text_input("Email", key="su_email")
         username = st.sidebar.text_input("Username", key="su_username")
@@ -284,89 +267,54 @@ if not st.session_state.authenticated:
         confirm_password = st.sidebar.text_input("Confirm Password", type="password", key="su_confirm_password")
 
         if st.sidebar.button("Sign Up", key="su_btn"):
-            # Strip inputs to avoid whitespace issues
-            full_name = full_name.strip() if full_name else ""
-            email = email.strip() if email else ""
-            username = username.strip() if username else ""
-            password = password.strip() if password else ""
-            confirm_password = confirm_password.strip() if confirm_password else ""
-
             if not all([full_name, email, username, password, confirm_password]):
                 st.toast("❌ All fields required", icon="⚠️")
-            elif not (len(full_name) >= 4 and all(x.isalpha() or x.isspace() for x in full_name)):
-                st.toast("❌ Full Name must be at least 4 letters and contain only letters", icon="👤")
-            elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
-                st.toast("❌ Invalid email format", icon="📧")
-            elif len(username) < 4 or not username[0].isupper():
-                st.toast("❌ Username must be min 4 characters and start with a capital letter", icon="👤")
-            elif not (7 <= len(password) <= 15):
-                st.toast("❌ Password must be 7-15 characters long", icon="🔑")
-            elif not any(c.isupper() for c in password):
-                st.toast("❌ Password must contain at least one capital letter", icon="🔠")
-            elif not any(c.isdigit() for c in password):
-                st.toast("❌ Password must contain at least one number", icon="🔢")
-            elif not any(not c.isalnum() for c in password):
-                st.toast("❌ Password must contain at least one special character", icon="🔣")
             elif password != confirm_password:
                 st.toast("❌ Passwords do not match", icon="🚫")
             else:
-                # Check if user exists
                 existing_user = users_collection.find_one({"username": username})
                 if existing_user:
                     st.toast("❌ Username already exists", icon="✋")
                 else:
-                    # Hash password
                     hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-                    
                     new_user = {
-                        "name": full_name,
-                        "email": email,
-                        "username": username,
-                        "password": hashed_password  # Store hash
+                        "name": full_name.strip(),
+                        "email": email.strip(),
+                        "username": username.strip(),
+                        "password": hashed_password,
+                        "created_at": datetime.datetime.now()
                     }
                     users_collection.insert_one(new_user)
                     st.toast("✅ Account created. Please login.", icon="🎉")
-                    st.success("✅ Account created. Please login.")
 
     if auth_tab == "Login":
         st.sidebar.subheader("Login")
-
         username = st.sidebar.text_input("Username", key="li_username")
         password = st.sidebar.text_input("Password", type="password", key="li_password")
 
         if st.sidebar.button("Login", key="li_btn"):
-            username = username.strip() if username else ""
-            password = password.strip() if password else ""
-            
             if not username or not password:
                  st.sidebar.error("❌ Username and Password required")
             else:
-                user = users_collection.find_one({"username": username})
-                
-                if user:
-                    # Verify password
-                    if bcrypt.checkpw(password.encode('utf-8'), user["password"]):
-                        st.session_state.authenticated = True
-                        st.session_state.current_user = user # Store entire user object or just needed fields
-                        st.session_state.page = "Home"
-                        st.rerun()
-                    else:
-                        st.sidebar.error("❌ Invalid credentials")
+                user = users_collection.find_one({"username": username.strip()})
+                if user and bcrypt.checkpw(password.strip().encode('utf-8'), user["password"]):
+                    st.session_state.authenticated = True
+                    st.session_state.current_user = user
+                    st.session_state.last_activity = datetime.datetime.now()
+                    st.session_state.page = "Home"
+                    st.rerun()
                 else:
                     st.sidebar.error("❌ Invalid credentials")
 
     st.stop()
 
 # ---------------- AFTER LOGIN ----------------
-# Fetch latest data for current user to ensure nothing stale
-if st.session_state.current_user:
-     # We can rely on session state or fetch fresh
-     user_data = st.session_state.current_user
-     st.sidebar.success(f"👋 Welcome, {user_data.get('name', 'User')}")
+user_data = st.session_state.current_user
+st.sidebar.success(f"👋 Welcome, {user_data.get('name', 'User')}")
 
 nav = st.sidebar.radio(
     "Navigate",
-    ["Home", "Problem & Solution", "Market & ROI", "AI Strategy Engine", "History"],
+    ["Home", "Problem & Solution", "Market & ROI", "AI Strategy Engine", "History", "Profile & Analytics"],
     key="nav_radio"
 )
 st.session_state.page = nav
@@ -376,79 +324,321 @@ if st.sidebar.button("Logout", key="logout_btn"):
     st.session_state.current_user = None
     st.rerun()
 
-# ---------------- SIDEBAR EXTRA ----------------
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 💡 AI Tip of the Day")
+import random
 tips = [
     "Personalized emails have 26% higher open rates.",
     "Follow up within 5 minutes to increase conversion by 9x.",
     "Predictive scoring reduces research time by 60%.",
     "Multi-channel outreach increases response by 3x."
 ]
-import random
 st.sidebar.info(random.choice(tips))
 
 st.sidebar.markdown("""
 <div style="padding-top: 20px; text-align: center;">
-    <small style="color: var(--text-dim);">V 2.1.0 Premium</small>
+    <small style="color: var(--text-dim);">V 2.2.0 Premium</small>
 </div>
 """, unsafe_allow_html=True)
 
 # =====================================================
+# PROFILE & ANALYTICS
+# =====================================================
+if st.session_state.page == "Profile & Analytics":
+    st.title("👤 Profile & Analytics")
+    
+    username = user_data.get("username")
+    strategies = list(strategies_collection.find({"username": username}))
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+        st.subheader("Your Profile")
+        st.markdown(f"**Name:** {user_data.get('name')}")
+        st.markdown(f"**Email:** {user_data.get('email')}")
+        st.markdown(f"**Username:** {username}")
+        member_since = user_data.get("created_at", datetime.datetime.now()).strftime("%B %Y")
+        st.markdown(f"**Member Since:** {member_since}")
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+    with col2:
+        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+        st.subheader("Your Activity Analytics")
+        a1, a2, a3 = st.columns(3)
+        a1.metric("Total Strategies", len(strategies))
+        starred = len([s for s in strategies if s.get("starred")])
+        a2.metric("Starred Reports", starred)
+        words_generated = sum([len(s.get("ai_response", "").split()) for s in strategies])
+        a3.metric("Words Generated", f"{words_generated:,}")
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        if strategies:
+            # Industry breakdown chart
+            df = pd.DataFrame(strategies)
+            if 'industry' in df.columns:
+                ind_counts = df['industry'].value_counts().reset_index()
+                ind_counts.columns = ['Industry', 'Count']
+                fig = px.pie(ind_counts, values='Count', names='Industry', 
+                             title="Strategies by Industry", hole=0.4,
+                             color_discrete_sequence=px.colors.sequential.Purp)
+                fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', 
+                                  font_color="white")
+                st.plotly_chart(fig, use_container_width=True)
+
+# =====================================================
 # HISTORY PAGE
 # =====================================================
-if st.session_state.page == "History":
+elif st.session_state.page == "History":
     st.title("📜 Strategy History")
-    st.caption("View your past AI-generated business strategies")
+    st.caption("View, search, and manage your past AI-generated strategies")
 
-    user_info = st.session_state.current_user
-    # Handle case where user_info is dict or string (depending on how it was stored)
-    username = user_info.get("username") if isinstance(user_info, dict) else user_info
+    username = user_data.get("username")
+    
+    # Search and Filter
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        search_term = st.text_input("🔍 Search strategies by business or challenge...", "")
+    with col2:
+        filter_starred = st.checkbox("⭐ Show only starred")
 
-    # Find strategies for this user, sort by latest first
-    cursor = strategies_collection.find({"username": username}).sort("created_at", -1)
+    # Build query
+    query = {"username": username}
+    if search_term:
+        query["$or"] = [
+            {"business_type": {"$regex": search_term, "$options": "i"}},
+            {"challenge": {"$regex": search_term, "$options": "i"}},
+            {"industry": {"$regex": search_term, "$options": "i"}}
+        ]
+    if filter_starred:
+        query["starred"] = True
+
+    cursor = strategies_collection.find(query).sort("created_at", -1)
     strategies = list(cursor)
 
     if not strategies:
         st.info("No history found. Run the AI Strategy Engine to generate reports!")
     else:
         for i, strat in enumerate(strategies):
-            # Format timestamp
-            ts = strat.get("created_at", datetime.datetime.now()).strftime("%Y-%m-%d %H:%M")
+            ts = strat.get("created_at", datetime.datetime.now())
+            time_str = time_ago(ts)
             business = strat.get("business_type", "Unknown Business")
             product = strat.get("product", "Unknown Product")
+            doc_id = strat.get("_id")
+            is_starred = strat.get("starred", False)
             
-            with st.expander(f"📅 {ts} | {business} - {product}"):
-                st.markdown(f"**Industry:** {strat.get('industry')}")
-                st.markdown(f"**Target Market:** {strat.get('target_market')} | **Scale:** {strat.get('scale')}")
-                st.markdown(f"**Location:** {strat.get('location')}")
+            star_icon = "⭐" if is_starred else "☆"
+            title = f"{star_icon} {business} - {product} ({time_str})"
+            
+            with st.expander(title):
+                st.markdown(f"**Industry:** {strat.get('industry')} | **Target Market:** {strat.get('target_market')}")
                 st.markdown(f"**Challenge:** {strat.get('challenge')}")
-                st.markdown(f"**Goal:** {strat.get('goal')}")
+                
+                # Action Buttons
+                btn_c1, btn_c2, btn_c3, btn_c4 = st.columns(4)
+                if btn_c1.button("Toggle Star ⭐", key=f"star_{doc_id}"):
+                    strategies_collection.update_one({"_id": doc_id}, {"$set": {"starred": not is_starred}})
+                    st.rerun()
+                
+                if btn_c2.button("🗑️ Delete", key=f"del_{doc_id}"):
+                    strategies_collection.delete_one({"_id": doc_id})
+                    st.toast("Strategy deleted successfully!")
+                    st.rerun()
+                
+                # PDF Download
+                pdf_bytes = generate_pdf(strat, strat.get("ai_response", ""))
+                btn_c3.download_button(
+                    label="📄 Download PDF",
+                    data=pdf_bytes,
+                    file_name=f"{business}_strategy.pdf",
+                    mime="application/pdf",
+                    key=f"pdf_{doc_id}"
+                )
+                
                 st.divider()
                 st.markdown("### 🤖 AI Strategy Report")
                 st.markdown(strat.get("ai_response"))
 
 # =====================================================
+# AI STRATEGY ENGINE
+# =====================================================
+elif st.session_state.page == "AI Strategy Engine":
+
+    st.title("🤖 AI Strategy Engine")
+    st.caption("AI that thinks like a consultant, strategist, and sales leader")
+
+    MASTER_PROMPT = """
+    You are a senior B2B Market Strategy Consultant.
+    
+    Respond STRICTLY in the following sections:
+    ### BUSINESS STRATEGY
+    - Overview
+    - Key improvement areas
+    - Data-driven recommendations
+    - Expected growth impact (%)
+
+    ### LOCATION INTELLIGENCE
+    - 5 business or industrial locations with reasons
+
+    ### COMPETITOR ANALYSIS
+    - Competitor mindset
+    - Pricing strategy
+    - Strengths & Weaknesses
+    - Strategic gaps
+    - How this business can win
+    """
+
+    with st.form("ai_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            business_type = st.text_input("Business Type *")
+            product = st.text_input("Product / Service Name *")
+            industry = st.selectbox("Industry *", list(INDUSTRY_PROMPTS.keys()))
+        with col2:
+            scale = st.selectbox("Business Scale *", ["Startup", "Small", "Medium", "Enterprise"])
+            target_market = st.selectbox("Target Market *", ["B2B", "B2C", "B2B2C"])
+            location = st.text_input("Primary Business Location *")
+            
+        challenge = st.text_area("Current Business Challenge *", height=100)
+        goal = st.selectbox("Primary Goal *", ["Increase Revenue", "Improve Conversion", "Reduce CAC", "Scale Operations", "Market Expansion"])
+
+        submit = st.form_submit_button("🚀 Generate Strategy Report")
+
+    if submit:
+        # Rate limit check
+        can_run, msg = check_rate_limit()
+        if not can_run:
+            st.error(f"❌ {msg}")
+            st.stop()
+            
+        if not model:
+            st.error("❌ AI Service is currently unavailable. Please check your connection.")
+            st.stop()
+
+        if not business_type or not product or not location or not challenge:
+            st.error("❌ Please fill in all required fields marked with *.")
+            st.stop()
+
+        industry_context = INDUSTRY_PROMPTS.get(industry, "")
+        
+        USER_INPUT = f"""
+        Business Type: {business_type}
+        Product: {product}
+        Industry: {industry} ({industry_context})
+        Business Scale: {scale}
+        Target Market: {target_market}
+        Location: {location}
+        Current Challenge: {challenge}
+        Goal: {goal}
+        """
+
+        # Progress bar animation
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i in range(100):
+            time.sleep(0.02)
+            progress_bar.progress(i + 1)
+            if i == 20: status_text.text("🧠 Analyzing market data...")
+            elif i == 50: status_text.text("📊 Formulating competitive strategy...")
+            elif i == 80: status_text.text("✍️ Finalizing report...")
+
+        try:
+            response = model.generate_content(MASTER_PROMPT + "\n\n" + USER_INPUT)
+            result_text = response.text
+            increment_rate_limit()
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            st.success("✅ Strategy Report Generated Successfully!")
+            
+            # Show Analytics
+            words, reading_time = get_word_count(result_text)
+            st.caption(f"⏱️ Reading time: ~{reading_time} min ({words} words)")
+            
+            st.markdown(result_text)
+
+            # SAVE TO DB
+            strategy_doc = {
+                "username": st.session_state.current_user.get("username"),
+                "business_type": business_type,
+                "product": product,
+                "industry": industry,
+                "scale": scale,
+                "target_market": target_market,
+                "location": location,
+                "challenge": challenge,
+                "goal": goal,
+                "ai_response": result_text,
+                "created_at": datetime.datetime.now(),
+                "starred": False
+            }
+            strategies_collection.insert_one(strategy_doc)
+            st.toast("✅ Saved to your History!")
+
+            # GRAPH
+            st.subheader("📊 AI Impact Projection")
+            months = ["M1", "M2", "M3", "M4", "M5", "M6"]
+            before = [100, 105, 108, 110, 112, 115]
+            after = [100, 115, 135, 160, 190, 225]
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=months, y=before, name="Traditional Growth", line=dict(color="#94A3B8", dash="dash")))
+            fig.add_trace(go.Scatter(x=months, y=after, name="AI-Accelerated Growth", line=dict(color="#06B6D4", width=3)))
+            fig.update_layout(title="Projected Performance Index", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font_color="white")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # PDF Download
+            pdf_bytes = generate_pdf(strategy_doc, result_text)
+            st.download_button(
+                label="📄 Download PDF Report",
+                data=pdf_bytes,
+                file_name=f"{business_type.replace(' ','_')}_Strategy.pdf",
+                mime="application/pdf"
+            )
+
+            # Follow up questions UI
+            st.session_state.chat_history.append({"role": "assistant", "content": "I've generated your report. What specific area would you like to dive deeper into?"})
+
+        except Exception as e:
+            st.error(f"❌ An error occurred during AI generation: {e}")
+
+    # Chat interface at the bottom
+    if len(st.session_state.chat_history) > 0:
+        st.divider()
+        st.subheader("💬 Discuss this Strategy")
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "user":
+                st.markdown(f"**You:** {msg['content']}")
+            else:
+                st.markdown(f"**Growth_AI:** {msg['content']}")
+                
+        chat_input = st.text_input("Ask a follow-up question...")
+        if st.button("Send") and chat_input:
+            st.session_state.chat_history.append({"role": "user", "content": chat_input})
+            with st.spinner("Thinking..."):
+                resp = model.generate_content(f"Based on our strategy discussion, answer this: {chat_input}")
+                st.session_state.chat_history.append({"role": "assistant", "content": resp.text})
+            st.rerun()
+
+# =====================================================
 # HOME PAGE
 # =====================================================
-if st.session_state.page == "Home":
-    # Hero Section with Animation
+elif st.session_state.page == "Home":
     st.markdown("""
     <div class="animate-fade-in" style="background: linear-gradient(135deg, rgba(124, 58, 237, 0.1), rgba(6, 182, 212, 0.1)); padding: 60px; border-radius: 30px; border: 1px solid rgba(255, 255, 255, 0.05); margin-bottom: 40px; text-align: center;">
         <h1 class="gradient-text" style="font-size: 4em; margin-bottom: 10px;">Accelerate Your Growth</h1>
         <p style="color: var(--text-main); font-size: 1.5em; font-weight: 300; max-width: 800px; margin: 0 auto 20px;">
-            The Intelligence Layer for Modern B2B Sales Teams. 
-            Empowering your outreach with predictive AI and real-time market signals.
+            The Intelligence Layer for Modern B2B Teams. 
         </p>
         <div style="display: flex; justify-content: center; gap: 15px; margin-top: 30px;">
             <span class="badge" style="padding: 10px 20px; font-size: 1rem;">98% Accuracy</span>
             <span class="badge" style="padding: 10px 20px; font-size: 1rem;">Real-time Data</span>
-            <span class="badge" style="padding: 10px 20px; font-size: 1rem;">Enterprise Grade</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Key Metrics / Value Prop
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown("""
@@ -468,65 +658,25 @@ if st.session_state.page == "Home":
         st.markdown("""
         <div class="glass-card">
             <h3 style="color: var(--secondary);"><i class='fas fa-chart-line'></i> Conversion</h3>
-            <p style="color: var(--text-dim);">Boost conversion rates by up to 25% with hyper-personalized outreach generated by Gemini AI.</p>
+            <p style="color: var(--text-dim);">Boost conversion rates by up to 25% with hyper-personalized outreach generated by AI.</p>
         </div>
         """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Core Capabilities
-    st.markdown("<h3 class='gradient-text'>Core Intelligence Modules</h3>", unsafe_allow_html=True)
-    row1_1, row1_2 = st.columns(2)
-    with row1_1:
-         st.markdown("""
-         <div class="glass-card">
-            <h4><i class='fas fa-user-tie' style='color:var(--primary)'></i> AI Strategy Consultant</h4>
-            <ul style="color: var(--text-dim); line-height: 1.8;">
-                <li>Virtual Head of Sales for strategic guidance</li>
-                <li>Real-time market trend & gap analysis</li>
-                <li>Competitive pricing & distribution optimization</li>
-            </ul>
-         </div>
-         """, unsafe_allow_html=True)
-    with row1_2:
-         st.markdown("""
-         <div class="glass-card">
-            <h4><i class='fas fa-map-marked-alt' style='color:var(--primary)'></i> Location Intelligence</h4>
-            <ul style="color: var(--text-dim); line-height: 1.8;">
-                <li>Regional expansion heatmap analysis</li>
-                <li>Localized market dynamic tracking</li>
-                <li>Optimized field-sales route planning</li>
-            </ul>
-         </div>
-         """, unsafe_allow_html=True)
-
-    # EXTRA: New Experience section
-    st.markdown("<h3 class='gradient-text'>Live Market Pulse</h3>", unsafe_allow_html=True)
-    col_a, col_b, col_c, col_d = st.columns(4)
-    col_a.metric("Global Leads Tracked", "1.2M+", "+5% Today")
-    col_b.metric("AI Predictions", "450k", "+12% MoM")
-    col_c.metric("Conversion Uplift", "22%", "Avg")
-    col_d.metric("System Uptime", "99.9%", "Verified")
 
 # =====================================================
 # PROBLEM & SOLUTION
 # =====================================================
-if st.session_state.page == "Problem & Solution":
+elif st.session_state.page == "Problem & Solution":
     st.markdown("<h1 class='gradient-text'>Bridging the Growth Gap</h1>", unsafe_allow_html=True)
-    st.caption("Revolutionizing B2B sales from fragmented data to unified intelligence.")
     
     col1, col2 = st.columns(2)
-    
     with col1:
         st.markdown("""
         <div class="glass-card" style="border-left: 4px solid var(--accent);">
             <h3 style="color: var(--accent);"><i class='fas fa-times-circle'></i> The Legacy Way</h3>
-            <p><b>"Spray and Pray" Strategy</b></p>
             <ul style="color: var(--text-dim);">
                 <li>SDRs wasting 60% of time on manual research</li>
                 <li>Generic outreach that damages brand reputation</li>
                 <li>Strategy based on gut-feeling and fragmented data</li>
-                <li>High burnout rates due to repetitive rejection</li>
             </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -535,222 +685,33 @@ if st.session_state.page == "Problem & Solution":
         st.markdown("""
         <div class="glass-card" style="border-left: 4px solid var(--secondary);">
             <h3 style="color: var(--secondary);"><i class='fas fa-check-circle'></i> The Growth_AI Way</h3>
-            <p><b>"Precision Strike" Strategy</b></p>
             <ul style="color: var(--text-dim);">
                 <li>Automated AI dossiers on every high-value prospect</li>
                 <li>Hyper-personalization at scale across all channels</li>
                 <li>Data-driven insights from real-time market signals</li>
-                <li>High-performing teams focused on closing, not hunting</li>
             </ul>
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("""
-    <div class="glass-card" style="text-align: center; margin-top: 20px;">
-        <h3 style="color: var(--primary);"><i class='fas fa-lightbulb'></i> Strategic Context</h3>
-        <p style="font-size: 1.1em;">
-            Modern B2B buyers complete 80% of their journey before engagement. 
-            Growth_AI ensures you are present, relevant, and authoritative from the first touchpoint.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
 # =====================================================
 # MARKET & ROI
 # =====================================================
-if st.session_state.page == "Market & ROI":
+elif st.session_state.page == "Market & ROI":
     st.markdown("<h1 class='gradient-text'>Economics of Intelligence</h1>", unsafe_allow_html=True)
-    st.caption("Quantifying the impact of AI-driven sales strategies.")
 
-    # Metrics Row
     m1, m2, m3 = st.columns(3)
-    with m1:
-        st.metric("Total Addressable Market", "$24B+", "+12% Growth")
-    with m2:
-        st.metric("Qualified Lead Velocity", "3.5x", "Increase")
-    with m3:
-        st.metric("Avg. CAC Reduction", "40%", "First 12 Months")
+    m1.metric("Total Addressable Market", "$24B+", "+12% Growth")
+    m2.metric("Qualified Lead Velocity", "3.5x", "Increase")
+    m3.metric("Avg. CAC Reduction", "40%", "First 12 Months")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ROI Visualization
-    with st.container():
-        st.markdown("""
-        <div class="glass-card">
-            <h4><i class='fas fa-chart-bar' style='color:var(--secondary)'></i> Projected Revenue Uplift</h4>
-            <p style="color:var(--text-dim)">Comparison between traditional manual research and AI-augmented sales intelligence.</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Simple Bar Chart Data
-        categories = ['Manual Research', 'Growth_AI Augmented']
-        revenue = [500000, 685000] 
-        colors = ['#F43F5E', '#06B6D4']
-
-        # Use st.bar_chart for a cleaner look that matches the theme better than default matplotlib
-        import pandas as pd
-        roi_data = pd.DataFrame({
-            'Strategy': categories,
-            'Revenue ($)': revenue
-        }).set_index('Strategy')
-        st.bar_chart(roi_data, color="#06B6D4")
-
-    st.markdown("""
-    <div class="glass-card" style="margin-top: 20px;">
-        <h3 style="color: var(--primary);"><i class='fas fa-calculator'></i> ROI Breakdown</h3>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-            <div>
-                <p><b>Efficiency Gains</b></p>
-                <p style="color: var(--text-dim);">Recover ~750 high-value hours per year per SDR by automating prospect intelligence gathering.</p>
-            </div>
-            <div>
-                <p><b>Revenue Optimization</b></p>
-                <p style="color: var(--text-dim);">Realize $180k+ in additional annual revenue through optimized conversion and better targeting.</p>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# =====================================================
-# AI STRATEGY ENGINE
-# =====================================================
-
-
-
-if st.session_state.page == "AI Strategy Engine":
-
-    st.title("🤖 Growth_AI – " \
-    "AI Strategy Engine")
-    st.caption("AI that thinks like a consultant, strategist, and sales leader")
-
-    MASTER_PROMPT = """
-    You are a senior B2B Market Strategy Consultant.
-
-    Respond STRICTLY in the following sections:
-
-    ### BUSINESS STRATEGY
-    - Overview
-    - Key improvement areas
-    - Data-driven recommendations
-    - Expected growth impact (%)
-
-    ### LOCATION INTELLIGENCE
-    - 5 business or industrial locations with reasons
-
-    ### COMPETITOR ANALYSIS
-    - Competitor mindset
-    - Pricing strategy
-    - Sales & distribution
-    - Marketing approach
-    - Strengths
-    - Weaknesses
-    - Strategic gaps
-    - How this business can win
-    """
-
-    with st.form("ai_form"):
-        business_type = st.text_input("Business Type *")
-        product = st.text_input("Product / Service Name *")
-        industry = st.text_input("Industry *")
-
-        scale = st.selectbox(
-            "Business Scale *",
-            ["Small", "Medium", "Large"]
-        )
-
-        target_market = st.selectbox(
-            "Target Market *",
-            ["B2B", "B2C"]
-        )
-
-        location = st.text_input("Primary Business Location *")
-        challenge = st.text_area("Current Business Challenge *")
-        goal = st.selectbox(
-            "Primary Goal *",
-            ["Increase Revenue", "Improve Conversion", "Reduce CAC", "Scale Operations"]
-        )
-
-        submit = st.form_submit_button("🚀 Run AI Strategy")
-
-    # ---------------- VALIDATION ----------------
-    if submit:
-        # Check model availability first
-        if not model:
-            st.error("❌ AI Service is currently unavailable. Please check your connection.")
-            st.stop()
-
-        required_text_fields = {
-            "Business Type": business_type,
-            "Product / Service Name": product,
-            "Industry": industry,
-            "Location": location,
-            "Business Challenge": challenge
-        }
-
-        # Check empty / whitespace-only
-        for field_name, value in required_text_fields.items():
-            if not value or not value.strip():
-                st.error(f"❌ {field_name} cannot be empty.")
-                st.stop()
-
-        # ---------------- AI CALL ----------------
-        USER_INPUT = f"""
-        Business Type: {business_type}
-        Product: {product}
-        Industry: {industry}
-        Business Scale: {scale}
-        Target Market: {target_market}
-        Location: {location}
-        Current Challenge: {challenge}
-        Goal: {goal}
-        """
-
-        with st.spinner("🧠 Running AI strategy analysis..."):
-            try:
-                response = model.generate_content(MASTER_PROMPT + "\n\n" + USER_INPUT)
-                result_text = response.text
-                
-                st.markdown(result_text)
-
-                # ================= SAVE TO DB =================
-                strategy_doc = {
-                    "username": st.session_state.current_user.get("username") if isinstance(st.session_state.current_user, dict) else st.session_state.current_user,
-                    "business_type": business_type,
-                    "product": product,
-                    "industry": industry,
-                    "scale": scale,
-                    "target_market": target_market,
-                    "location": location,
-                    "challenge": challenge,
-                    "goal": goal,
-                    "ai_response": result_text,
-                    "created_at": datetime.datetime.now()
-                }
-                strategies_collection.insert_one(strategy_doc)
-                st.success("✅ Strategy Report Saved to Database!")
-
-                # ================= GRAPH =================
-                st.subheader("📊 AI Impact – Before vs After")
-
-                months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]
-                before = np.random.randint(30, 50, 6)
-                after = before + np.random.randint(20, 35, 6)
-
-                fig, ax = plt.subplots()
-                ax.plot(months, before, marker="o", label="Before AI")
-                ax.plot(months, after, marker="o", label="After AI")
-                ax.set_ylabel("Business Performance Index")
-                ax.legend()
-                st.pyplot(fig)
-
-                st.download_button(
-                    "📄 Download AI Strategy Report",
-                    result_text,
-                    file_name="Growth_AI_Strategy_Report.txt"
-                )
-
-            except Exception as e:
-                st.error(f"❌ An error occurred during AI generation: {e}")
+    categories = ['Manual Research', 'Growth_AI Augmented']
+    revenue = [500000, 685000] 
+    
+    fig = px.bar(x=categories, y=revenue, text_auto=True, color=categories, 
+                 color_discrete_sequence=['#F43F5E', '#06B6D4'],
+                 title="Projected Revenue Uplift")
+    fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font_color="white")
+    st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================
 # GLOBAL FOOTER
@@ -758,16 +719,10 @@ if st.session_state.page == "AI Strategy Engine":
 st.markdown("""
 <div style="margin-top: 100px; padding: 40px; border-top: 1px solid rgba(255,255,255,0.05); text-align: center; color: var(--text-dim);">
     <div style="display: flex; justify-content: center; gap: 30px; margin-bottom: 20px;">
-        <a href="#" style="color: var(--text-dim); text-decoration: none; font-size: 0.9em;">Privacy Policy</a>
-        <a href="#" style="color: var(--text-dim); text-decoration: none; font-size: 0.9em;">Terms of Service</a>
-        <a href="#" style="color: var(--text-dim); text-decoration: none; font-size: 0.9em;">Documentation</a>
+        <a href="#" style="color: var(--text-dim); text-decoration: none;">Privacy Policy</a>
+        <a href="#" style="color: var(--text-dim); text-decoration: none;">Terms of Service</a>
+        <a href="#" style="color: var(--text-dim); text-decoration: none;">Documentation</a>
     </div>
-    <p style="font-size: 0.85em;">© 2025 Growth_AI Intelligence Platform. Built for the future of B2B sales.</p>
-    <div style="margin-top: 15px;">
-        <i class="fab fa-linkedin" style="font-size: 1.2em; margin: 0 10px; color: var(--text-dim);"></i>
-        <i class="fab fa-twitter" style="font-size: 1.2em; margin: 0 10px; color: var(--text-dim);"></i>
-        <i class="fab fa-github" style="font-size: 1.2em; margin: 0 10px; color: var(--text-dim);"></i>
-    </div>
+    <p style="font-size: 0.85em;">© 2026 Growth_AI Intelligence Platform. Built for the future of B2B sales.</p>
 </div>
 """, unsafe_allow_html=True)
-
