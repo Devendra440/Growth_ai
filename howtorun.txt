@@ -1,0 +1,17 @@
+mongodb atlas link: https://cloud.mongodb.com/v2/6946fa9b346a717940cf341b#/overview (open in edge and click on sign up with google account pinnamguptha1234@gmail.com)
+
+how to run: 
+path:(.venv) PS C:\Users\pinna\OneDrive\Desktop\Streamlit>
+then enter command: streamlit run app.py
+
+output will be: 
+
+You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.1.11:8501
+
+repository link: 
+
+delpoyment link:
+
