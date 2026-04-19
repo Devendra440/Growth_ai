@@ -157,6 +157,26 @@ st.markdown("""
         font-weight: 600;
         border: 1px solid rgba(124, 58, 237, 0.3);
     }
+    /* Media Queries for Responsiveness */
+    @media (max-width: 1024px) {
+        div[data-testid="stMetricValue"] { font-size: 2rem !important; }
+        .glass-card { padding: 20px; }
+    }
+
+    @media (max-width: 768px) {
+        .stApp { background-attachment: scroll; }
+        .gradient-text { font-size: 2.5rem !important; }
+        div[data-testid="stMetricValue"] { font-size: 1.8rem !important; }
+        .glass-card { padding: 15px; border-radius: 15px; }
+        .hero-section { padding: 30px 15px !important; }
+        .hero-title { font-size: 2.2rem !important; }
+    }
+
+    @media (max-width: 480px) {
+        .gradient-text { font-size: 2rem !important; }
+        .hero-title { font-size: 1.8rem !important; }
+        .badge { font-size: 0.7rem; padding: 3px 8px; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -673,12 +693,12 @@ elif st.session_state.page == "AI Strategy Engine":
 # =====================================================
 elif st.session_state.page == "Home":
     st.markdown("""
-    <div class="animate-fade-in" style="background: linear-gradient(135deg, rgba(124, 58, 237, 0.1), rgba(6, 182, 212, 0.1)); padding: 60px; border-radius: 30px; border: 1px solid rgba(255, 255, 255, 0.05); margin-bottom: 40px; text-align: center;">
-        <h1 class="gradient-text" style="font-size: 4em; margin-bottom: 10px;">Accelerate Your Growth</h1>
+    <div class="animate-fade-in hero-section" style="background: linear-gradient(135deg, rgba(124, 58, 237, 0.1), rgba(6, 182, 212, 0.1)); padding: 60px; border-radius: 30px; border: 1px solid rgba(255, 255, 255, 0.05); margin-bottom: 40px; text-align: center;">
+        <h1 class="gradient-text hero-title" style="font-size: 4em; margin-bottom: 10px;">Accelerate Your Growth</h1>
         <p style="color: var(--text-main); font-size: 1.5em; font-weight: 300; max-width: 800px; margin: 0 auto 20px;">
             The Intelligence Layer for Modern B2B Teams. 
         </p>
-        <div style="display: flex; justify-content: center; gap: 15px; margin-top: 30px;">
+        <div style="display: flex; justify-content: center; gap: 15px; margin-top: 30px; flex-wrap: wrap;">
             <span class="badge" style="padding: 10px 20px; font-size: 1rem;">98% Accuracy</span>
             <span class="badge" style="padding: 10px 20px; font-size: 1rem;">Real-time Data</span>
         </div>
