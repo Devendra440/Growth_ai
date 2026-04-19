@@ -21,7 +21,8 @@ from helpers import (
     check_rate_limit, increment_rate_limit, 
     check_session_timeout, generate_pdf, 
     get_word_count, INDUSTRY_PROMPTS, 
-    ensure_indexes, time_ago
+    ensure_indexes, time_ago,
+    generate_otp, send_verification_email
 )
 
 # =====================================================
@@ -199,6 +200,10 @@ if "current_user" not in st.session_state:
     st.session_state.current_user = None
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "verifying_user" not in st.session_state:
+    st.session_state.verifying_user = None
+if "verification_otp" not in st.session_state:
+    st.session_state.verification_otp = None
 
 # =====================================================
 # API KEY CHECK
@@ -256,6 +261,29 @@ if st.session_state.authenticated:
 st.sidebar.title("🔐 Account")
 
 if not st.session_state.authenticated:
+    # ---------------- EMAIL VERIFICATION UI ----------------
+    if st.session_state.verifying_user:
+        st.sidebar.subheader("Verify Email")
+        st.sidebar.info(f"OTP sent to {st.session_state.verifying_user['email']}")
+        otp_input = st.sidebar.text_input("Enter 6-digit OTP", key="otp_input")
+        
+        col1, col2 = st.sidebar.columns(2)
+        if col1.button("Verify", key="verify_btn"):
+            if otp_input == st.session_state.verification_otp:
+                users_collection.insert_one(st.session_state.verifying_user)
+                st.toast("✅ Email verified! Please login.", icon="🎉")
+                st.session_state.verifying_user = None
+                st.session_state.verification_otp = None
+                st.rerun()
+            else:
+                st.sidebar.error("❌ Invalid OTP")
+        
+        if col2.button("Cancel", key="cancel_verify"):
+            st.session_state.verifying_user = None
+            st.session_state.verification_otp = None
+            st.rerun()
+        st.stop()
+
     auth_tab = st.sidebar.radio("Select", ["Login", "Sign Up"], key="auth_radio")
 
     if auth_tab == "Sign Up":
@@ -272,20 +300,26 @@ if not st.session_state.authenticated:
             elif password != confirm_password:
                 st.toast("❌ Passwords do not match", icon="🚫")
             else:
-                existing_user = users_collection.find_one({"username": username})
+                existing_user = users_collection.find_one({"username": username.strip()})
                 if existing_user:
                     st.toast("❌ Username already exists", icon="✋")
                 else:
-                    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-                    new_user = {
-                        "name": full_name.strip(),
-                        "email": email.strip(),
-                        "username": username.strip(),
-                        "password": hashed_password,
-                        "created_at": datetime.datetime.now()
-                    }
-                    users_collection.insert_one(new_user)
-                    st.toast("✅ Account created. Please login.", icon="🎉")
+                    otp = generate_otp()
+                    success, msg = send_verification_email(email.strip(), otp)
+                    
+                    if success:
+                        hashed_password = bcrypt.hashpw(password.strip().encode('utf-8'), bcrypt.gensalt())
+                        st.session_state.verifying_user = {
+                            "name": full_name.strip(),
+                            "email": email.strip(),
+                            "username": username.strip(),
+                            "password": hashed_password,
+                            "created_at": datetime.datetime.now()
+                        }
+                        st.session_state.verification_otp = otp
+                        st.rerun()
+                    else:
+                        st.sidebar.error(f"❌ Failed to send email: {msg}")
 
     if auth_tab == "Login":
         st.sidebar.subheader("Login")

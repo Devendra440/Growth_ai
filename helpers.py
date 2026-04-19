@@ -1,10 +1,61 @@
 """
 helpers.py - Utility functions for Growth_AI
 """
+import os
 import datetime
 import streamlit as st
 from fpdf import FPDF
 import io
+import smtplib
+import random
+import string
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+# =====================================================
+# EMAIL VERIFICATION
+# =====================================================
+def generate_otp():
+    """Generate a 6-digit numeric OTP."""
+    return ''.join(random.choices(string.digits, k=6))
+
+def send_verification_email(receiver_email, otp):
+    """Send verification email using Gmail SMTP."""
+    sender_email = os.getenv("EMAIL_USER")
+    sender_password = os.getenv("EMAIL_PASS")
+    
+    if not sender_email or not sender_password:
+        return False, "Email credentials not found in environment."
+
+    message = MIMEMultipart("alternative")
+    message["Subject"] = "Verify your Growth_AI Account"
+    message["From"] = f"Growth_AI <{sender_email}>"
+    message["To"] = receiver_email
+
+    html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+        <h2 style="color: #7C3AED;">Welcome to Growth_AI!</h2>
+        <p>Thank you for signing up. Please use the following code to verify your account:</p>
+        <div style="background: #f4f4f4; padding: 15px; font-size: 24px; font-weight: bold; text-align: center; border-radius: 10px; border: 1px solid #ddd;">
+          {otp}
+        </div>
+        <p>This code will expire in 10 minutes.</p>
+        <p>If you didn't request this, you can safely ignore this email.</p>
+        <hr style="border: none; border-top: 1px solid #eee; margin-top: 20px;">
+        <small style="color: #999;">© 2026 Growth_AI Intelligence Platform</small>
+      </body>
+    </html>
+    """
+    message.attach(MIMEText(html, "html"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, receiver_email, message.as_string())
+        return True, "Email sent successfully."
+    except Exception as e:
+        return False, str(e)
 
 # =====================================================
 # RATE LIMITING
